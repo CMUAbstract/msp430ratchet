@@ -26,6 +26,8 @@
 #include "llvm/Pass.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include "Debug.h"
+
 namespace llvm {
 
 class MemoryIdempotenceAnalysisImpl;

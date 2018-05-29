@@ -19,6 +19,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "include/IdempotenceOptions.h"
 #include "include/MemoryIdempotenceAnalysis.h"
 #include "llvm/CodeGen/Passes.h"
@@ -27,6 +28,23 @@
 #include "llvm/IR/IRBuilder.h"
 #include <vector>
 using namespace llvm;
+
+namespace {
+
+DebugLoc findClosestDebugLoc(Instruction *instr)
+{
+	DIScope *scope = instr->getFunction()->getSubprogram();
+	Instruction *instrWithDebugLoc = instr;
+	while (!instrWithDebugLoc->getDebugLoc() && instrWithDebugLoc->getPrevNode() != NULL)
+		instrWithDebugLoc = instrWithDebugLoc->getPrevNode();
+	if (instrWithDebugLoc->getDebugLoc()) // if found an instruction with info, use that info
+		return DebugLoc(instrWithDebugLoc->getDebugLoc());
+	else // use the parent function's info (can't see any better source)
+		return DebugLoc::get(instr->getFunction()->getSubprogram()->getLine(), /* col */ 0, scope);
+}
+
+} // anon namespace
+
 
 class ConstructIdempotentRegions : public FunctionPass {
 public:
@@ -70,7 +88,8 @@ bool ConstructIdempotentRegions::runOnFunction(Function &F) {
 		DEBUG(dbgs() << "Func: " << F.getName() << "\n");
     // Iterate over the analysis cut points and insert cuts.
     MemoryIdempotenceAnalysis *MIA = &getAnalysis<MemoryIdempotenceAnalysis>();
-    Constant *CP = F.getParent()->getOrInsertFunction("checkpoint", FunctionType::get(Type::getVoidTy(F.getParent()->getContext()), false), AttributeSet());
+    Constant *CP = F.getParent()->getOrInsertFunction("checkpoint",
+			FunctionType::get(Type::getVoidTy(F.getParent()->getContext()), false));
     //Function *Idem = Intrinsic::getDeclaration(F.getParent(), Intrinsic::idem);
 
 
@@ -86,7 +105,13 @@ bool ConstructIdempotentRegions::runOnFunction(Function &F) {
 		// Change name for the python backend
 		if (F.getName().str().compare("main") != 0) {
 			F.setName("_ratchet_" + F.getName());
-			CallInst::Create(CP, "", F.begin()->begin());
+			//CallInst::Create(CP, "", &(*F.begin()->begin()));
+
+			Instruction *insertPoint = &(*F.begin()->begin());
+			IRBuilder<> builder(insertPoint);
+			builder.SetCurrentDebugLocation(findClosestDebugLoc(insertPoint));
+			auto call = builder.CreateCall(CP);
+
 		}
 
     for (MemoryIdempotenceAnalysis::const_iterator I = MIA->begin(),
@@ -97,7 +122,14 @@ bool ConstructIdempotentRegions::runOnFunction(Function &F) {
 
      // IRBuilder<> Builder(*I); 
 
-			CallInst::Create(CP, "", *I);
+			//CallInst::Create(CP, "", *I);
+
+			Instruction *insertPoint = *I;
+			IRBuilder<> builder(insertPoint);
+			builder.SetCurrentDebugLocation(findClosestDebugLoc(insertPoint));
+			auto call = builder.CreateCall(CP);
+
+
      // if(IdempotenceConstructionMode == IdempotenceOptions::OptimizeForSpeed)
      // {
      //   CallInst *CP = Builder.CreateCall(Idem, "");

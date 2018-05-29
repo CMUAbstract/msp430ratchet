@@ -56,7 +56,7 @@ static bool isSubloopPreheader(const BasicBlock &BB,
 static std::string getLocator(const Instruction &I) {
   unsigned Offset = 0;
   const BasicBlock *BB = I.getParent();
-  for (BasicBlock::const_iterator It = I; It != BB->begin(); --It)
+  for (BasicBlock::const_iterator It = I.getIterator(); It != BB->begin(); --It)
     ++Offset;
 
   std::stringstream SS;
@@ -292,7 +292,7 @@ bool MemoryIdempotenceAnalysisImpl::runOnFunction(Function &F) {
     for (BasicBlock::iterator I = BB->begin(); I != BB->end(); ++I)
       //if (isa<StoreInst>(I) || isa<CallInst>(I) || isa<MemIntrinsic>(I))
       if (isa<StoreInst>(I))
-        findAntidependencePairs(I);
+        findAntidependencePairs(&(*I));
 
   // Return early if there's nothing to analyze.
   if (AntidependencePairs_.empty())
@@ -313,11 +313,12 @@ void MemoryIdempotenceAnalysisImpl::forceCut(BasicBlock::iterator I) {
   // are one common case that we are handled after instruction selection; see
   // patchCallingConvention() in PatchMachineIdempotentRegions.  In the absence
   // of any actual hardware support, the others are just approximated here.
-  if (CallSite(I))
+  if (CallSite(&(*I)))
     return;
 
   DEBUG(dbgs() << " Inserting forced cut at " << getLocator(*I) << "\n");
-  CutSet_.insert(++I);
+  ++I;
+  CutSet_.insert(&(*I));
 }
 
 void MemoryIdempotenceAnalysisImpl::findAntidependencePairs(Instruction *Write) {
@@ -333,7 +334,7 @@ void MemoryIdempotenceAnalysisImpl::findAntidependencePairs(Instruction *Write) 
   do {
     BasicBlock *BB;
     BasicBlock::iterator I, E;
-    tie(BB, I) = Worklist.pop_back_val();
+    std::tie(BB, I) = Worklist.pop_back_val();
 
     // If we are revisiting WriteBB, we scan to Write to complete the cycle.
     // Otherwise we end at BB->begin().
@@ -375,7 +376,7 @@ bool MemoryIdempotenceAnalysisImpl::scanForAliasingLoad(BasicBlock::iterator I,
     if (isa<LoadInst>(I)) {
 //      if (AA_->getModRefInfo(I, Pointer, PointerSize) & AliasAnalysis::Ref) {
 				if (AA_->alias(I->getOperand(0), Pointer) != AliasResult::NoAlias) {
-        AntidependencePairTy Pair = AntidependencePairTy(I, Store);
+        AntidependencePairTy Pair = AntidependencePairTy(&(*I), Store);
         DEBUG(dbgs() << "  " << Pair << "\n");
         AntidependencePairs_.push_back(Pair);
         DEBUG(dbgs() << "JVDW: Alias Pair Locations\n");
@@ -393,7 +394,7 @@ bool MemoryIdempotenceAnalysisImpl::scanForAliasingLoad(BasicBlock::iterator I,
   if (I->getParent() == &I->getParent()->getParent()->getEntryBlock())
     if (isa<GlobalValue>(Store->getPointerOperand()))
     {
-        AntidependencePairTy Pair = AntidependencePairTy(I, Store);
+        AntidependencePairTy Pair = AntidependencePairTy(&(*I), Store);
         DEBUG(dbgs() << "  " << Pair << "\n");
         AntidependencePairs_.push_back(Pair);
         return true;
@@ -407,8 +408,8 @@ void MemoryIdempotenceAnalysisImpl::computeAntidependencePaths() {
   // Compute an antidependence path for each antidependence pair.
   for (AntidependencePairs::iterator I = AntidependencePairs_.begin(), 
        E = AntidependencePairs_.end(); I != E; ++I) {
-    BasicBlock::iterator Load, Store;
-    tie(Load, Store) = *I;
+    Instruction *Load, *Store;
+    std::tie(Load, Store) = *I;
 
     // Prepare a new antidependence path.
     AntidependencePaths_.resize(AntidependencePaths_.size() + 1);
@@ -419,12 +420,12 @@ void MemoryIdempotenceAnalysisImpl::computeAntidependencePaths() {
 
     // The rest of the path consists of other stores that dominate Store but do
     // not dominate Load.  Handle the block-local case quickly.
-    BasicBlock::iterator Cursor = Store;
+    BasicBlock::iterator Cursor = Store->getIterator();
     BasicBlock *SBB = Store->getParent(), *LBB = Load->getParent();
     if (SBB == LBB && DT_->dominates(Load, Store)) {
-      while (--Cursor != Load)
-        if (isa<StoreInst>(Cursor))
-          Path.push_back(Cursor);
+      while (&(*(--Cursor)) != Load)
+        if (isa<StoreInst>(&(*Cursor)))
+          Path.push_back(&(*Cursor));
       DEBUG(dbgs() << " Local " << *I << " has path " << Path << "\n");
       continue;
     }
@@ -437,7 +438,7 @@ void MemoryIdempotenceAnalysisImpl::computeAntidependencePaths() {
       BasicBlock::iterator E = BB->begin();
       while (Cursor != E)
         if (isa<StoreInst>(--Cursor))
-          Path.push_back(Cursor);
+          Path.push_back(&(*Cursor));
 
       // Move the cursor to the end of BB's IDom block.
       DTNode = DTNode->getIDom();

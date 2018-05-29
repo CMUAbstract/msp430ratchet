@@ -15,6 +15,9 @@
 #define LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H
 
 #include "llvm/Support/CommandLine.h"
+
+#include "Debug.h"
+
 using namespace llvm;
 
 namespace llvm {
